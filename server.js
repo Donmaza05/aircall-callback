@@ -25,9 +25,9 @@ async function startOutboundCall(userId, numberToCallback) {
                 }
             }
         );
-        console.log('✅ Appel démarré avec succès:', response.data);
+        console.log('Appel démarré avec succès:', response.data);
     } catch (error) {
-        console.error('❌ Erreur lors du démarrage de l\'appel:', error.response ? error.response.data : error);
+        console.error('Erreur lors du démarrage de l\'appel:', error.response ? error.response.data : error);
     }
 }
 
@@ -39,7 +39,7 @@ app.post('/callback_request', async (req, res) => {
         return res.status(400).json({ error: "userId et phoneNumber sont requis" });
     }
 
-    console.log(`📞 Demande de rappel reçue pour ${phoneNumber} par l'utilisateur ${userId}`);
+    console.log(`Demande de rappel reçue pour ${phoneNumber} par l'utilisateur ${userId}`);
     await startOutboundCall(userId, phoneNumber);
     res.status(200).json({ message: "L'appel est en cours de traitement." });
 });
@@ -47,5 +47,5 @@ app.post('/callback_request', async (req, res) => {
 // Démarrage du serveur
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-    console.log(`🚀 Serveur actif sur port ${PORT}`);
+    console.log(`Serveur actif sur port ${PORT}`);
 });
