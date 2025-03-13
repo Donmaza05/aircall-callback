@@ -7,7 +7,7 @@ app.use(express.json());
 const AIRCALL_API_URL = "https://api.aircall.io/v1"; // Assurez-vous que c'est bien la bonne URL
 const API_ID = "71f04116bc8cc19965b0b43e78abfc14"; // Remplace avec ton API ID
 const API_TOKEN = "098dbad72a34e56440a3032291bb19aa"; // Remplace avec ton API Token
-const AIRCALL_NUMBER_ID = 599594; // ID du numéro Aircall +33189711220
+const AIRCALL_NUMBER_ID = 599594; // ID du numéro Aircall 33189711220
 
 // Fonction pour déclencher l'appel
 async function startOutboundCall(userId, numberToCallback) {
