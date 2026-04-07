@@ -18,15 +18,11 @@ const WINDSOR_API_KEY   = '6ae9cb5c4bdcf3caf35b3bae60ca63736e00';
 const WINDSOR_ACCOUNT   = '824-247-6325';
 const AIRCALL_BASE_URL  = 'https://api.aircall.io/v1';
 
-// Store principal — clics pixel GTM (temps réel)
-const preCallStore = new Map();
+const preCallStore    = new Map();
+const windsorCache    = new Map();
+let lastKnownGclids   = new Set();
+let lastWindsorPoll   = 0;
 
-// Store Windsor — clics extension d'appel (polling)
-const windsorCallsCache = new Map();
-let lastWindsorPoll = 0;
-let lastKnownGclids = new Set();
-
-// Nettoyer le preCallStore toutes les 5 minutes
 setInterval(() => {
   const limit = Date.now() - 5 * 60 * 1000;
   for (const [k, v] of preCallStore) {
@@ -40,31 +36,26 @@ setInterval(() => {
 async function pollWindsor() {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const url = `https://connectors.windsor.ai/google_ads?` +
-      `api_key=${WINDSOR_API_KEY}` +
-      `&date_from=${today}` +
-      `&date_to=${today}` +
+    const filters = encodeURIComponent(JSON.stringify(
+      [["click_type","eq","CALLS"],"and",["adgroup","notnull",null]]
+    ));
+    const url = `https://connectors.windsor.ai/google_ads` +
+      `?api_key=${WINDSOR_API_KEY}` +
+      `&date_from=${today}&date_to=${today}` +
       `&fields=click_view_gclid,campaign,adgroup,click_type` +
-      `&filters=${encodeURIComponent(JSON.stringify([["click_type","eq","CALLS"],
-        "and",["adgroup","notnull",null]]))}` +
+      `&filters=${filters}` +
       `&accounts=${encodeURIComponent(JSON.stringify([WINDSOR_ACCOUNT]))}`;
 
     const res = await fetch(url);
-    if (!res.ok) {
-      console.error('[windsor] Erreur HTTP:', res.status);
-      return;
-    }
+    if (!res.ok) { console.error('[windsor] HTTP:', res.status); return; }
 
     const json = await res.json();
-    const data = json.data || json || [];
-    if (!Array.isArray(data)) return;
-
+    const data = Array.isArray(json) ? json : (json.data || []);
     let newCount = 0;
+
     for (const row of data) {
       const gclid = row.click_view_gclid || row.gclid;
       if (!gclid || lastKnownGclids.has(gclid)) continue;
-
-      // Nouveau GCLID découvert — l'enregistrer avec timestamp serveur
       lastKnownGclids.add(gclid);
       const entry = {
         gclid,
@@ -74,37 +65,28 @@ async function pollWindsor() {
         ts:       Date.now(),
         source:   'windsor'
       };
-      windsorCallsCache.set(gclid, entry);
+      windsorCache.set(gclid, entry);
       preCallStore.set('last_windsor', entry);
       newCount++;
     }
 
-    if (newCount > 0) {
-      console.log(`[windsor] ${newCount} nouveau(x) clic(s) d'appel detecte(s)`);
-    }
-
+    if (newCount > 0) console.log(`[windsor] ${newCount} nouveau(x) clic(s) detecte(s)`);
     lastWindsorPoll = Date.now();
 
-    // Nettoyer les anciens GCLIDs Windsor (> 24h)
-    const limit = Date.now() - 24 * 60 * 60 * 1000;
-    for (const [k, v] of windsorCallsCache) {
-      if (v.ts < limit) {
-        windsorCallsCache.delete(k);
-        lastKnownGclids.delete(k);
-      }
+    const limit24 = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [k, v] of windsorCache) {
+      if (v.ts < limit24) { windsorCache.delete(k); lastKnownGclids.delete(k); }
     }
-
   } catch (err) {
-    console.error('[windsor] Erreur polling:', err.message);
+    console.error('[windsor] Erreur:', err.message);
   }
 }
 
-// Démarrer le polling immédiatement puis toutes les 2 minutes
 pollWindsor();
 setInterval(pollWindsor, 2 * 60 * 1000);
 
 // ============================================================
-// ROUTE PIXEL — clics depuis siclaire.fr (temps réel)
+// ROUTES
 // ============================================================
 app.get('/pre-call-pixel', (req, res) => {
   try {
@@ -119,7 +101,7 @@ app.get('/pre-call-pixel', (req, res) => {
     if (entry.campaign || entry.gclid) {
       if (entry.gclid) preCallStore.set('gclid_' + entry.gclid, entry);
       preCallStore.set('last', entry);
-      console.log('[pre-call-pixel] Recu:', JSON.stringify(entry));
+      console.log('[pixel] Recu:', JSON.stringify(entry));
     }
   } catch(e) {}
   res.set('Content-Type', 'image/gif');
@@ -149,46 +131,35 @@ app.post('/pre-call', (req, res) => {
   }
 });
 
-// ============================================================
-// WEBHOOK AIRCALL
-// ============================================================
 app.post('/aircall-webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const { event, data } = req.body;
     if (!data || event !== 'call.created') return;
     if (data.direction !== 'inbound') return;
+    console.log('[webhook] Appel ID:', data.id, '| De:', data.raw_digits || data.from);
 
-    console.log('[webhook] Appel entrant ID:', data.id, '| De:', data.raw_digits || data.from);
+    const limit3 = Date.now() - 3 * 60 * 1000;
+    const limit5 = Date.now() - 5 * 60 * 1000;
+    let tracking  = null;
 
-    const limit = Date.now() - 3 * 60 * 1000;
-    let tracking = null;
-
-    // Priorité 1 — pixel GTM (temps réel, plus précis)
     for (const [k, v] of preCallStore) {
-      if (v.ts > limit && (v.campaign || v.adgroup)) {
+      if (v.ts > limit3 && (v.campaign || v.adgroup)) {
         if (!tracking || v.ts > tracking.ts) tracking = v;
       }
     }
 
-    // Priorité 2 — Windsor polling (extension d'appel directe)
     if (!tracking) {
-      const windsorLimit = Date.now() - 5 * 60 * 1000;
-      for (const [k, v] of windsorCallsCache) {
-        if (v.ts > windsorLimit && v.adgroup) {
+      for (const [k, v] of windsorCache) {
+        if (v.ts > limit5 && v.adgroup) {
           if (!tracking || v.ts > tracking.ts) tracking = v;
         }
       }
     }
 
-    if (!tracking) {
-      console.log('[webhook] Aucun tracking trouve.');
-      return;
-    }
-
-    console.log(`[webhook] Tracking trouve (source: ${tracking.source}):`, JSON.stringify(tracking));
+    if (!tracking) { console.log('[webhook] Aucun tracking.'); return; }
+    console.log(`[webhook] Source: ${tracking.source} | Adgroup: ${tracking.adgroup}`);
     await sendInsightCard(data.id, tracking);
-
   } catch(err) {
     console.error('[webhook] Erreur:', err.message);
   }
@@ -198,41 +169,81 @@ app.post('/aircall-webhook', async (req, res) => {
 // INSIGHT CARD
 // ============================================================
 async function sendInsightCard(callId, tracking) {
-  const adgroup = formatLabel(tracking.adgroup);
-  const product = detectProduct(tracking.campaign, tracking.adgroup);
+  const adgroup  = formatLabel(tracking.adgroup);
+  const product  = detectProduct(tracking.campaign, tracking.adgroup);
+  const campaign = (tracking.campaign || '-')
+    .replace(/#/g, 'N°')
+    .substring(0, 28);
 
   const card = {
     contents: [
-      { type: 'title',     text: adgroup },
-      { type: 'shortText', label: 'Produit',   text: product },
-      { type: 'shortText', label: 'Campagne',  text: tracking.campaign || '-' },
-      { type: 'shortText', label: 'Mot-cle',   text: tracking.keyword  || 'non renseigne' },
-      { type: 'shortText', label: 'Source',    text: tracking.source === 'windsor' ? 'Extension appel' : 'Site web' },
-      { type: 'shortText', label: 'Action',    text: 'Proposer alternative SI CLAIRE' }
+      {
+        type: 'title',
+        text: adgroup
+      },
+      {
+        type: 'shortText',
+        label: 'Compagnie',
+        text: adgroup
+      },
+      {
+        type: 'shortText',
+        label: 'Produit',
+        text: product
+      },
+      {
+        type: 'shortText',
+        label: 'Campagne',
+        text: campaign
+      },
+      {
+        type: 'shortText',
+        label: 'Mot-cle',
+        text: (tracking.keyword || 'non renseigne').substring(0, 25)
+      },
+      {
+        type: 'shortText',
+        label: 'Source',
+        text: tracking.source === 'windsor' ? 'Ext. appel Google' : 'Site web'
+      },
+      {
+        type: 'shortText',
+        label: 'Action',
+        text: 'Proposer SI CLAIRE'
+      }
     ]
   };
 
-  const credentials = Buffer.from(AIRCALL_API_ID + ':' + AIRCALL_API_TOKEN).toString('base64');
+  const credentials = Buffer.from(
+    AIRCALL_API_ID + ':' + AIRCALL_API_TOKEN
+  ).toString('base64');
+
   try {
-    const response = await fetch(`${AIRCALL_BASE_URL}/calls/${callId}/insight_cards`, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Basic ' + credentials,
-        'Content-Type':  'application/json'
-      },
-      body: JSON.stringify(card)
-    });
+    const response = await fetch(
+      `${AIRCALL_BASE_URL}/calls/${callId}/insight_cards`,
+      {
+        method:  'POST',
+        headers: {
+          'Authorization': 'Basic ' + credentials,
+          'Content-Type':  'application/json'
+        },
+        body: JSON.stringify(card)
+      }
+    );
     if (response.ok) {
-      console.log('[insight_card] Envoyee OK — Call ID:', callId, '|', adgroup);
+      console.log('[card] OK — ID:', callId, '|', adgroup);
     } else {
       const err = await response.text();
-      console.error('[insight_card] Erreur Aircall:', response.status, err);
+      console.error('[card] Erreur:', response.status, err);
     }
   } catch (err) {
-    console.error('[insight_card] Fetch echoue:', err.message);
+    console.error('[card] Fetch echoue:', err.message);
   }
 }
 
+// ============================================================
+// HELPERS
+// ============================================================
 function formatLabel(adgroup) {
   if (!adgroup) return 'Compagnie inconnue';
   return adgroup
@@ -254,17 +265,17 @@ function detectProduct(campaign, adgroup) {
 }
 
 // ============================================================
-// HEALTH CHECK
+// HEALTH
 // ============================================================
 app.get('/health', (req, res) => {
   res.json({
     status:        'ok',
     store:         preCallStore.size,
-    windsor_cache: windsorCallsCache.size,
+    windsor_cache: windsorCache.size,
     last_poll:     new Date(lastWindsorPoll).toISOString(),
     time:          new Date().toISOString()
   });
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log('Serveur SI CLAIRE demarre sur port', PORT));
+app.listen(PORT, () => console.log('Serveur SI CLAIRE port', PORT));
