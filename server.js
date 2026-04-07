@@ -4,6 +4,15 @@ const app = express();
 app.use(express.json());
 app.use(express.text({ type: '*/*' }));
 
+// CORS — obligatoire pour recevoir le sendBeacon depuis siclaire.fr
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 const AIRCALL_API_ID    = '6fc70e4e7cbd62083547e0a79612b161';
 const AIRCALL_API_TOKEN = 'f86b32f5db4d2f2808eb554f01812be5';
 const AIRCALL_BASE_URL  = 'https://api.aircall.io/v1';
@@ -21,7 +30,7 @@ app.post('/pre-call', (req, res) => {
   try {
     const raw  = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
     const data = JSON.parse(raw);
-    if (!data.campaign && !data.adgroup) return res.sendStatus(200);
+    if (!data.campaign && !data.adgroup && !data.gclid) return res.sendStatus(200);
     const entry = {
       gclid:    data.gclid    || null,
       campaign: data.campaign || null,
@@ -31,7 +40,7 @@ app.post('/pre-call', (req, res) => {
     };
     if (data.gclid) preCallStore.set('gclid_' + data.gclid, entry);
     preCallStore.set('last', entry);
-    console.log('[pre-call]', new Date().toISOString(), entry);
+    console.log('[pre-call] Recu:', JSON.stringify(entry));
     res.sendStatus(200);
   } catch (err) {
     console.error('[pre-call] Erreur:', err.message);
@@ -44,7 +53,7 @@ app.post('/aircall-webhook', async (req, res) => {
   const { event, data } = req.body;
   if (!data || event !== 'call.created') return;
   if (data.direction !== 'inbound') return;
-  console.log('[webhook] Appel entrant ID:', data.id, '| De:', data.from);
+  console.log('[webhook] Appel entrant ID:', data.id, '| De:', data.raw_digits || data.from);
   const limit = Date.now() - 3 * 60 * 1000;
   let tracking = null;
   for (const [k, v] of preCallStore) {
@@ -53,10 +62,10 @@ app.post('/aircall-webhook', async (req, res) => {
     }
   }
   if (!tracking) {
-    console.log('[webhook] Aucun tracking trouvé.');
+    console.log('[webhook] Aucun tracking trouve.');
     return;
   }
-  console.log('[webhook] Tracking trouvé:', tracking);
+  console.log('[webhook] Tracking trouve:', JSON.stringify(tracking));
   await sendInsightCard(data.id, tracking);
 });
 
@@ -76,14 +85,17 @@ async function sendInsightCard(callId, tracking) {
   try {
     const response = await fetch(`${AIRCALL_BASE_URL}/calls/${callId}/insight_cards`, {
       method:  'POST',
-      headers: { 'Authorization': 'Basic ' + credentials, 'Content-Type': 'application/json' },
-      body:    JSON.stringify(card)
+      headers: {
+        'Authorization': 'Basic ' + credentials,
+        'Content-Type':  'application/json'
+      },
+      body: JSON.stringify(card)
     });
     if (response.ok) {
-      console.log('[insight_card] Envoyee ✓ Call ID:', callId, '|', label);
+      console.log('[insight_card] Envoyee OK — Call ID:', callId, '|', label);
     } else {
       const err = await response.text();
-      console.error('[insight_card] Erreur API Aircall:', response.status, err);
+      console.error('[insight_card] Erreur Aircall:', response.status, err);
     }
   } catch (err) {
     console.error('[insight_card] Fetch echoue:', err.message);
@@ -110,7 +122,11 @@ function detectProduct(campaign, adgroup) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', store: preCallStore.size, time: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    store:  preCallStore.size,
+    time:   new Date().toISOString()
+  });
 });
 
 const PORT = process.env.PORT || 3001;
