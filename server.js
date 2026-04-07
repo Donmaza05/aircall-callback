@@ -18,11 +18,15 @@ const WINDSOR_API_KEY   = '6ae9cb5c4bdcf3caf35b3bae60ca63736e00';
 const WINDSOR_ACCOUNT   = '824-247-6325';
 const AIRCALL_BASE_URL  = 'https://api.aircall.io/v1';
 
-const preCallStore    = new Map();
-const windsorCache    = new Map();
-let lastKnownGclids   = new Set();
-let lastWindsorPoll   = 0;
+// Store pixel GTM (temps réel)
+const preCallStore  = new Map();
 
+// File FIFO Windsor — chaque clic consommé une seule fois
+const windsorQueue  = [];
+const knownGclids   = new Set();
+let lastWindsorPoll = 0;
+
+// Nettoyer preCallStore toutes les 5 min
 setInterval(() => {
   const limit = Date.now() - 5 * 60 * 1000;
   for (const [k, v] of preCallStore) {
@@ -32,6 +36,7 @@ setInterval(() => {
 
 // ============================================================
 // POLLING WINDSOR — toutes les 2 minutes
+// Récupère les nouveaux clics d'appel et les ajoute à la file
 // ============================================================
 async function pollWindsor() {
   try {
@@ -55,28 +60,26 @@ async function pollWindsor() {
 
     for (const row of data) {
       const gclid = row.click_view_gclid || row.gclid;
-      if (!gclid || lastKnownGclids.has(gclid)) continue;
-      lastKnownGclids.add(gclid);
-      const entry = {
+      if (!gclid || knownGclids.has(gclid)) continue;
+
+      // Nouveau clic — ajout en fin de file FIFO
+      knownGclids.add(gclid);
+      windsorQueue.push({
         gclid,
         campaign: row.campaign || null,
         adgroup:  row.adgroup  || null,
         keyword:  null,
         ts:       Date.now(),
         source:   'windsor'
-      };
-      windsorCache.set(gclid, entry);
-      preCallStore.set('last_windsor', entry);
+      });
       newCount++;
     }
 
-    if (newCount > 0) console.log(`[windsor] ${newCount} nouveau(x) clic(s) detecte(s)`);
+    if (newCount > 0) {
+      console.log(`[windsor] +${newCount} clic(s) | File: ${windsorQueue.length}`);
+    }
     lastWindsorPoll = Date.now();
 
-    const limit24 = Date.now() - 24 * 60 * 60 * 1000;
-    for (const [k, v] of windsorCache) {
-      if (v.ts < limit24) { windsorCache.delete(k); lastKnownGclids.delete(k); }
-    }
   } catch (err) {
     console.error('[windsor] Erreur:', err.message);
   }
@@ -86,7 +89,7 @@ pollWindsor();
 setInterval(pollWindsor, 2 * 60 * 1000);
 
 // ============================================================
-// ROUTES
+// PIXEL GTM — clic depuis siclaire.fr (temps réel)
 // ============================================================
 app.get('/pre-call-pixel', (req, res) => {
   try {
@@ -126,40 +129,47 @@ app.post('/pre-call', (req, res) => {
     console.log('[pre-call] Recu:', JSON.stringify(entry));
     res.sendStatus(200);
   } catch (err) {
-    console.error('[pre-call] Erreur:', err.message);
     res.sendStatus(400);
   }
 });
 
+// ============================================================
+// WEBHOOK AIRCALL
+// ============================================================
 app.post('/aircall-webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const { event, data } = req.body;
     if (!data || event !== 'call.created') return;
     if (data.direction !== 'inbound') return;
+
     console.log('[webhook] Appel ID:', data.id, '| De:', data.raw_digits || data.from);
 
-    const limit3 = Date.now() - 3 * 60 * 1000;
-    const limit5 = Date.now() - 5 * 60 * 1000;
-    let tracking  = null;
+    let tracking = null;
 
+    // Priorité 1 — pixel GTM (temps réel, visiteur passé par le site)
+    const limit3 = Date.now() - 3 * 60 * 1000;
     for (const [k, v] of preCallStore) {
       if (v.ts > limit3 && (v.campaign || v.adgroup)) {
         if (!tracking || v.ts > tracking.ts) tracking = v;
       }
     }
+    if (tracking) preCallStore.delete('last'); // consommer
 
-    if (!tracking) {
-      for (const [k, v] of windsorCache) {
-        if (v.ts > limit5 && v.adgroup) {
-          if (!tracking || v.ts > tracking.ts) tracking = v;
-        }
-      }
+    // Priorité 2 — file Windsor FIFO (extension d'appel directe)
+    if (!tracking && windsorQueue.length > 0) {
+      tracking = windsorQueue.shift(); // consommer le premier
+      console.log(`[windsor] Clic consomme | File restante: ${windsorQueue.length}`);
     }
 
-    if (!tracking) { console.log('[webhook] Aucun tracking.'); return; }
+    if (!tracking) {
+      console.log('[webhook] Aucun tracking disponible.');
+      return;
+    }
+
     console.log(`[webhook] Source: ${tracking.source} | Adgroup: ${tracking.adgroup}`);
     await sendInsightCard(data.id, tracking);
+
   } catch(err) {
     console.error('[webhook] Erreur:', err.message);
   }
@@ -269,11 +279,11 @@ function detectProduct(campaign, adgroup) {
 // ============================================================
 app.get('/health', (req, res) => {
   res.json({
-    status:        'ok',
-    store:         preCallStore.size,
-    windsor_cache: windsorCache.size,
-    last_poll:     new Date(lastWindsorPoll).toISOString(),
-    time:          new Date().toISOString()
+    status:       'ok',
+    pixel_store:  preCallStore.size,
+    windsor_queue: windsorQueue.length,
+    last_poll:    new Date(lastWindsorPoll).toISOString(),
+    time:         new Date().toISOString()
   });
 });
 
