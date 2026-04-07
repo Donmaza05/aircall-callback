@@ -4,7 +4,6 @@ const app = express();
 app.use(express.json());
 app.use(express.text({ type: '*/*' }));
 
-// CORS — obligatoire pour recevoir le sendBeacon depuis siclaire.fr
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
@@ -26,6 +25,27 @@ setInterval(() => {
   }
 }, 60000);
 
+// Route pixel image — contourne CORS (utilisée par GTM)
+app.get('/pre-call-pixel', (req, res) => {
+  try {
+    const entry = {
+      gclid:    req.query.gclid    || null,
+      campaign: req.query.campaign || null,
+      adgroup:  req.query.adgroup  || null,
+      keyword:  req.query.keyword  || null,
+      ts:       Date.now()
+    };
+    if (entry.campaign || entry.gclid) {
+      if (entry.gclid) preCallStore.set('gclid_' + entry.gclid, entry);
+      preCallStore.set('last', entry);
+      console.log('[pre-call-pixel] Recu:', JSON.stringify(entry));
+    }
+  } catch(e) {}
+  res.set('Content-Type', 'image/gif');
+  res.send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
+});
+
+// Route POST classique (fallback)
 app.post('/pre-call', (req, res) => {
   try {
     const raw  = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
@@ -50,23 +70,27 @@ app.post('/pre-call', (req, res) => {
 
 app.post('/aircall-webhook', async (req, res) => {
   res.sendStatus(200);
-  const { event, data } = req.body;
-  if (!data || event !== 'call.created') return;
-  if (data.direction !== 'inbound') return;
-  console.log('[webhook] Appel entrant ID:', data.id, '| De:', data.raw_digits || data.from);
-  const limit = Date.now() - 3 * 60 * 1000;
-  let tracking = null;
-  for (const [k, v] of preCallStore) {
-    if (v.ts > limit && v.campaign) {
-      if (!tracking || v.ts > tracking.ts) tracking = v;
+  try {
+    const { event, data } = req.body;
+    if (!data || event !== 'call.created') return;
+    if (data.direction !== 'inbound') return;
+    console.log('[webhook] Appel entrant ID:', data.id, '| De:', data.raw_digits || data.from);
+    const limit = Date.now() - 3 * 60 * 1000;
+    let tracking = null;
+    for (const [k, v] of preCallStore) {
+      if (v.ts > limit && v.campaign) {
+        if (!tracking || v.ts > tracking.ts) tracking = v;
+      }
     }
+    if (!tracking) {
+      console.log('[webhook] Aucun tracking trouve.');
+      return;
+    }
+    console.log('[webhook] Tracking trouve:', JSON.stringify(tracking));
+    await sendInsightCard(data.id, tracking);
+  } catch(err) {
+    console.error('[webhook] Erreur:', err.message);
   }
-  if (!tracking) {
-    console.log('[webhook] Aucun tracking trouve.');
-    return;
-  }
-  console.log('[webhook] Tracking trouve:', JSON.stringify(tracking));
-  await sendInsightCard(data.id, tracking);
 });
 
 async function sendInsightCard(callId, tracking) {
@@ -75,10 +99,10 @@ async function sendInsightCard(callId, tracking) {
   const card = {
     contents: [
       { type: 'title',     text: label },
-      { type: 'shortText', label: 'Produit',   text: product },
-      { type: 'shortText', label: 'Campagne',  text: tracking.campaign || '-' },
-      { type: 'shortText', label: 'Mot-cle',   text: tracking.keyword  || 'non renseigne' },
-      { type: 'shortText', label: 'Action',    text: 'Proposer alternative SI CLAIRE' }
+      { type: 'shortText', label: 'Produit',  text: product },
+      { type: 'shortText', label: 'Campagne', text: tracking.campaign || '-' },
+      { type: 'shortText', label: 'Mot-cle',  text: tracking.keyword  || 'non renseigne' },
+      { type: 'shortText', label: 'Action',   text: 'Proposer alternative SI CLAIRE' }
     ]
   };
   const credentials = Buffer.from(AIRCALL_API_ID + ':' + AIRCALL_API_TOKEN).toString('base64');
@@ -122,11 +146,7 @@ function detectProduct(campaign, adgroup) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    store:  preCallStore.size,
-    time:   new Date().toISOString()
-  });
+  res.json({ status: 'ok', store: preCallStore.size, time: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3001;
