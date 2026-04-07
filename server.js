@@ -25,7 +25,6 @@ setInterval(() => {
   }
 }, 60000);
 
-// Route pixel image — contourne CORS (utilisée par GTM)
 app.get('/pre-call-pixel', (req, res) => {
   try {
     const entry = {
@@ -45,7 +44,6 @@ app.get('/pre-call-pixel', (req, res) => {
   res.send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
 });
 
-// Route POST classique (fallback)
 app.post('/pre-call', (req, res) => {
   try {
     const raw  = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
@@ -78,7 +76,7 @@ app.post('/aircall-webhook', async (req, res) => {
     const limit = Date.now() - 3 * 60 * 1000;
     let tracking = null;
     for (const [k, v] of preCallStore) {
-      if (v.ts > limit && v.campaign) {
+      if (v.ts > limit && (v.campaign || v.adgroup)) {
         if (!tracking || v.ts > tracking.ts) tracking = v;
       }
     }
@@ -94,15 +92,15 @@ app.post('/aircall-webhook', async (req, res) => {
 });
 
 async function sendInsightCard(callId, tracking) {
-  const label   = formatLabel(tracking.adgroup);
+  const adgroup = formatLabel(tracking.adgroup);
   const product = detectProduct(tracking.campaign, tracking.adgroup);
   const card = {
     contents: [
-      { type: 'title',     text: label },
-      { type: 'shortText', label: 'Produit',  text: product },
-      { type: 'shortText', label: 'Campagne', text: tracking.campaign || '-' },
-      { type: 'shortText', label: 'Mot-cle',  text: tracking.keyword  || 'non renseigne' },
-      { type: 'shortText', label: 'Action',   text: 'Proposer alternative SI CLAIRE' }
+      { type: 'title',     text: adgroup },
+      { type: 'shortText', label: 'Produit',   text: product },
+      { type: 'shortText', label: 'Campagne',  text: tracking.campaign || '-' },
+      { type: 'shortText', label: 'Mot-cle',   text: tracking.keyword  || 'non renseigne' },
+      { type: 'shortText', label: 'Action',    text: 'Proposer alternative SI CLAIRE' }
     ]
   };
   const credentials = Buffer.from(AIRCALL_API_ID + ':' + AIRCALL_API_TOKEN).toString('base64');
@@ -116,7 +114,7 @@ async function sendInsightCard(callId, tracking) {
       body: JSON.stringify(card)
     });
     if (response.ok) {
-      console.log('[insight_card] Envoyee OK — Call ID:', callId, '|', label);
+      console.log('[insight_card] Envoyee OK — Call ID:', callId, '|', adgroup);
     } else {
       const err = await response.text();
       console.error('[insight_card] Erreur Aircall:', response.status, err);
