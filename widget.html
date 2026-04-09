@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:Segoe UI,sans-serif}
+body{background:#f0f2f5;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.hdr{background:linear-gradient(135deg,#16294F,#1e3a6e);color:white;padding:10px 14px;display:flex;align-items:center;gap:8px;flex-shrink:0}
+.htitle{font-size:13px;font-weight:600;flex:1}
+.badge{background:#CF1828;color:white;border-radius:10px;padding:1px 7px;font-size:11px;display:none}
+.sts{font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.15)}
+.sts.ok{background:#25d366}
+#chat{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:6px}
+.b{max-width:78%;padding:8px 12px;border-radius:12px;font-size:12.5px;line-height:1.45;word-break:break-word}
+.in{background:white;align-self:flex-start;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.out{background:#dcf8c6;align-self:flex-end;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.meta{font-size:10px;color:#999;margin-top:3px;text-align:right}
+.ag{color:#16294F;font-weight:600;font-size:10px;display:block}
+.snd{background:white;border-top:1px solid #e5e5e5;padding:8px 10px;display:flex;gap:8px;align-items:flex-end;flex-shrink:0}
+#inp{flex:1;border:1px solid #ddd;border-radius:20px;padding:7px 14px;font-size:13px;resize:none;outline:none;max-height:80px}
+#inp:focus{border-color:#16294F}
+#sbtn{background:#25d366;color:white;border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+#sbtn:disabled{background:#ccc;cursor:not-allowed}
+.ldr,.empty{text-align:center;color:#aaa;font-size:12px;padding:30px;line-height:1.6}
+.rbar{text-align:center;font-size:10px;color:#aaa;padding:3px;background:#f9f9f9;border-top:1px solid #eee;flex-shrink:0}
+</style></head><body>
+<div class="hdr">
+  <span style="font-size:20px">&#x1F4AC;</span>
+  <span class="htitle">WhatsApp SI CLAIRE</span>
+  <span id="badge" class="badge">0</span>
+  <span id="sts" class="sts">...</span>
+</div>
+<div id="chat"><div class="ldr" id="ldr">Chargement...</div></div>
+<div class="snd">
+  <textarea id="inp" rows="1" placeholder="Ecrire un message..."></textarea>
+  <button id="sbtn" onclick="snd()">&#10148;</button>
+</div>
+<div class="rbar" id="rbar">Auto-refresh 30s</div>
+<script src="https://js.zohostatic.com/crm/widgets/widgetsdk-v2.1.js"></script>
+<script>
+let cid="",phone="",user={};
+document.getElementById("inp").onkeydown=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();snd();}};
+ZOHO.embeddedApp.on("PageLoad",async function(d){
+  cid=d.EntityId;
+  try{
+    const[cr,ur]=await Promise.all([
+      ZOHO.CRM.API.getRecord({Entity:"Contacts",RecordID:cid}),
+      ZOHO.CRM.CONFIG.getCurrentUser()
+    ]);
+    const c=cr&&cr.data&&cr.data[0];
+    phone=((c&&(c.Phone||c.Mobile))||"").replace(/\s/g,"").replace(/^\+/,"");
+    user=(ur&&ur.users&&ur.users[0])||{};
+    document.getElementById("sts").textContent=user.full_name||"Agent";
+    document.getElementById("sts").classList.add("ok");
+    if(!phone){
+      document.getElementById("ldr").outerHTML='<div class="empty">Aucun numero sur ce contact.</div>';
+      document.getElementById("sbtn").disabled=true;
+      return;
+    }
+    load();setInterval(load,30000);
+  }catch(e){
+    document.getElementById("ldr").outerHTML='<div class="empty">Erreur: '+e.message+'</div>';
+  }
+});
+async function load(){
+  try{
+    const r=await ZOHO.CRM.FUNCTIONS.execute("whatsapp_get_conversation",{arguments:JSON.stringify({contact_id:cid})});
+    let msgs=[];
+    try{msgs=JSON.parse((r&&r.details&&r.details.output)||"[]");}catch(e){}
+    if(!Array.isArray(msgs))msgs=[];
+    render(msgs);
+  }catch(e){}
+}
+function render(msgs){
+  const a=document.getElementById("chat");
+  const l=document.getElementById("ldr");if(l)l.remove();
+  if(!msgs.length){a.innerHTML='<div class="empty">Aucun message.<br>Envoyez le premier!</div>';return;}
+  msgs.sort((a,b)=>new Date(a.date||0)-new Date(b.date||0));
+  let u=0;
+  a.innerHTML=msgs.map(function(m){
+    const out=m.direction==="Sortant";let dt="";
+    try{dt=new Date(m.date).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});}catch(e){}
+    if(!out&&m.statut==="Non lu")u++;
+    const ag=out&&m.agent_nom?'<span class="ag">'+esc(m.agent_nom)+"</span>":"";
+    return'<div class="b '+(out?"out":"in")+'">'+esc(m.message||"")+'<div class="meta">'+ag+"<span>"+dt+"</span></div></div>";
+  }).join("");
+  const b=document.getElementById("badge");
+  if(u>0){b.textContent=u;b.style.display="inline";}else b.style.display="none";
+  a.scrollTop=a.scrollHeight;
+  document.getElementById("rbar").textContent="Mis a jour "+new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})+" - 30s";
+}
+async function snd(){
+  const inp=document.getElementById("inp");
+  const txt=(inp.value||"").trim();
+  if(!txt||!phone)return;
+  const btn=document.getElementById("sbtn");
+  btn.disabled=true;inp.value="";
+  try{
+    await ZOHO.CRM.FUNCTIONS.execute("whatsapp_send_message",{arguments:JSON.stringify({
+      to_phone:phone,message_body:txt,contact_id:cid,
+      agent_id:user.id||"",agent_name:user.full_name||"Agent"
+    })});
+    await load();
+  }catch(e){alert("Erreur:"+e.message);inp.value=txt;}
+  finally{btn.disabled=false;}
+}
+function esc(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");}
+ZOHO.embeddedApp.init();
+</script>
+</body></html>
