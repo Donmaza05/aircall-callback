@@ -210,5 +210,5 @@ app.get('/widget', (req, res) => {
   res.setHeader('Content-Security-Policy', 'frame-ancestors *');
   res.sendFile(__dirname + '/widget.html');
 });
-app.listen(PORT, () => console.log('Serveur SI CLAIRE port', PORT));
+app.listen(PORT, () => console.log('Serveur SI CLAIRE port', PORT)); 
  
