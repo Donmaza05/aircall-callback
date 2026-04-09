@@ -205,5 +205,10 @@ app.post('/whatsapp/send', async (req, res) => {
 });
  
 const PORT = process.env.PORT || 3001;
+app.get('/widget', (req, res) => {
+  res.setHeader('X-Frame-Options', 'ALLOWALL');
+  res.setHeader('Content-Security-Policy', 'frame-ancestors *');
+  res.sendFile(__dirname + '/widget.html');
+});
 app.listen(PORT, () => console.log('Serveur SI CLAIRE port', PORT));
  
