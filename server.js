@@ -212,9 +212,3 @@ app.get('/widget', (req, res) => {
   res.sendFile(__dirname + '/widget.html');
 });
 app.listen(PORT, () => console.log('Serveur SI CLAIRE port', PORT));
-// Notifier proxy PHP
-const https = require('https');
-const pd = JSON.stringify({arguments: JSON.stringify(payload)});
-const req = https.request({hostname:'mysiclairepro.online',path:'/proxy.php?fn=whatsapp_incoming',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(pd)}});
-req.write(pd); req.end();
- 
