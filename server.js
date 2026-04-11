@@ -173,7 +173,7 @@ async function initWhatsApp() {
       console.log('[WA IN]', phone, ':', text.substring(0,50));
       try {
         const payload = { phone, message: text, wa_message_id: msg.key.id, timestamp: Math.floor(Date.now()/1000).toString() };
-              try{const _h=require('https');const _p=JSON.stringify({arguments:JSON.stringify(payload)});const _r=_h.request({hostname:'mysiclairepro.online',path:'/proxy.php?fn=whatsapp_incoming',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(_p)}},()=>{});_r.on('error',()=>{});_r.write(_p);_r.end();}catch(_e){}
+              try{const _h2=require('https');const _pd=JSON.stringify({arguments:JSON.stringify(payload)});const _opts={hostname:'mysiclairepro.online',path:'/proxy.php?fn=whatsapp_incoming',method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(_pd),'Connection':'close'}};const _rq=_h2.request(_opts,(res)=>{res.resume();});_rq.on('error',()=>{});_rq.write(_pd);_rq.end();}catch(_ex){}
         await fetch(process.env.ZOHO_WEBHOOK_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
       } catch(e) { console.error('[WA->ZOHO]', e.message); }
     }
